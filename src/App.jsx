@@ -5,6 +5,7 @@ import RecipeLibrary from './pages/RecipeLibrary'
 import RecipeDetail from './pages/RecipeDetail'
 import Dashboard from './pages/Dashboard'
 import MealCalculator from './pages/MealCalculator'
+import ProtectedRoute from './components/common/ProtectedRoute'
 
 function App() {
   return (
@@ -12,10 +13,18 @@ function App() {
       <Route path="/" element={<LandingPage />} />
       <Route path="/login" element={<LoginPage />} />
       <Route path="/signup" element={<LoginPage initialMode="signup" />} />
-      <Route path="/dashboard" element={<Dashboard />} />
-      <Route path="/recipes" element={<RecipeLibrary />} />
-      <Route path="/recipes/:id" element={<RecipeDetail />} />
-      <Route path="/calculator" element={<MealCalculator />} />
+      <Route path="/dashboard" element={
+        <ProtectedRoute><Dashboard /></ProtectedRoute>
+      } />
+      <Route path="/recipes" element={
+        <ProtectedRoute><RecipeLibrary /></ProtectedRoute>
+      } />
+      <Route path="/recipes/:id" element={
+        <ProtectedRoute><RecipeDetail /></ProtectedRoute>
+      } />
+      <Route path="/calculator" element={
+        <ProtectedRoute><MealCalculator /></ProtectedRoute>
+      } />
     </Routes>
   )
 }
