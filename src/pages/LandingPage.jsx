@@ -74,7 +74,14 @@ const HOW_IT_WORKS = [
 export default function LandingPage() {
   const [scrolled, setScrolled] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [visible, setVisible] = useState({});
+  const [visible, setVisible] = useState({
+  stats: true, featHead: true,
+  feat0: true, feat1: true, feat2: true,
+  feat3: true, feat4: true, feat5: true,
+  howHead: true, step0: true, step1: true,
+  step2: true, step3: true,
+  ext: true, cta: true,
+  });
   const sectionRefs = useRef({});
 
   useEffect(() => {
@@ -92,7 +99,7 @@ export default function LandingPage() {
           }
         });
       },
-      { threshold: 0.15 }
+      { threshold: 0.05, rootMargin: "0px 0px -50px 0px" }
     );
     Object.values(sectionRefs.current).forEach((el) => el && observer.observe(el));
     return () => observer.disconnect();
