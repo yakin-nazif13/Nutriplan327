@@ -7,6 +7,7 @@ import {
 import { db } from "../firebase";
 import { useAuth } from "../context/AuthContext";
 import ProfileDropdown from "../components/common/ProfileDropdown";
+import { uploadRecipePhoto } from "../hooks/usePhotoUpload";
 
 // ─── DIETARY FILTERS & COLLECTIONS ───────────────────────────────────────────
 const DIETARY_FILTERS = ["All", "Vegan", "Gluten-Free", "Low-Carb"];
@@ -57,13 +58,45 @@ export default function RecipeLibrary() {
     name: "", emoji: "🍽️", time: "", difficulty: "Easy",
     servings: 2, tag: "None", calories: "", protein: "", carbs: "", fat: "",
   });
+  const [photoFile, setPhotoFile] = useState(null);
+  const [photoPreview, setPhotoPreview] = useState(null);
   const [saving, setSaving] = useState(false);
 
   // ── Fetch recipes from Firestore ──────────────────────────────────────────
-  useEffect(() => {
-    if (!user) return;
-    fetchRecipes();
-  }, [user]);
+useEffect(() => {
+  if (!user) return;
+  fetchRecipes();
+}, [user]);
+
+// ── Read imported recipe from URL params ──────────────────────────────────
+useEffect(() => {
+  if (!user) return;
+  const params = new URLSearchParams(window.location.search);
+  const importData = params.get("import");
+  if (!importData) return;
+
+  const saveImport = async () => {
+    try {
+      const recipe = JSON.parse(decodeURIComponent(importData));
+      const docRef = await addDoc(collection(db, "recipes"), {
+        ...recipe,
+        userId: user.uid,
+        favorite: false,
+        nutrition: { calories: 0, protein: "—", carbs: "—", fat: "—" },
+        createdAt: serverTimestamp(),
+      });
+      setRecipes((prev) => [...prev, {
+        id: docRef.id, ...recipe, favorite: false
+      }]);
+      // Clean the URL without refreshing
+      window.history.replaceState({}, "", "/recipes");
+    } catch (err) {
+      console.error("Import error:", err);
+    }
+  };
+
+  saveImport();
+}, [user]);
 
   const fetchRecipes = async () => {
     setLoading(true);
@@ -128,34 +161,45 @@ export default function RecipeLibrary() {
 
   // ── Add new recipe ────────────────────────────────────────────────────────
   const handleAddRecipe = async () => {
-    if (!newRecipe.name.trim()) return;
-    setSaving(true);
-    try {
-      const docRef = await addDoc(collection(db, "recipes"), {
-        ...newRecipe,
-        userId: user.uid,
-        favorite: false,
-        nutrition: {
-          calories: Number(newRecipe.calories) || 0,
-          protein: newRecipe.protein || "0g",
-          carbs: newRecipe.carbs || "0g",
-          fat: newRecipe.fat || "0g",
-        },
-        createdAt: serverTimestamp(),
-      });
-      setRecipes((prev) => [...prev, {
-        id: docRef.id, ...newRecipe,
-        favorite: false, userId: user.uid,
-        nutrition: { calories: Number(newRecipe.calories) || 0 },
-      }]);
-      setAddOpen(false);
-      setNewRecipe({ name: "", emoji: "🍽️", time: "", difficulty: "Easy", servings: 2, tag: "None", calories: "", protein: "", carbs: "", fat: "" });
-    } catch (err) {
-      console.error("Error adding recipe:", err);
-    }
-    setSaving(false);
-  };
+  if (!newRecipe.name.trim()) return;
+  setSaving(true);
+  try {
+    // First create the doc to get an ID
+    const docRef = await addDoc(collection(db, "recipes"), {
+      ...newRecipe,
+      userId: user.uid,
+      favorite: false,
+      photoURL: null,
+      nutrition: {
+        calories: Number(newRecipe.calories) || 0,
+        protein: newRecipe.protein || "0g",
+        carbs: newRecipe.carbs || "0g",
+        fat: newRecipe.fat || "0g",
+      },
+      createdAt: serverTimestamp(),
+    });
 
+    // Upload photo if selected
+    let photoURL = null;
+    if (photoFile) {
+      photoURL = await uploadRecipePhoto(photoFile, docRef.id, user.uid);
+      await updateDoc(doc(db, "recipes", docRef.id), { photoURL });
+    }
+
+    setRecipes((prev) => [...prev, {
+      id: docRef.id, ...newRecipe,
+      favorite: false, photoURL,
+      nutrition: { calories: Number(newRecipe.calories) || 0 },
+    }]);
+    setAddOpen(false);
+    setPhotoFile(null);
+    setPhotoPreview(null);
+    setNewRecipe({ name: "", emoji: "🍽️", time: "", difficulty: "Easy", servings: 2, tag: "None", calories: "", protein: "", carbs: "", fat: "" });
+  } catch (err) {
+    console.error("Error adding recipe:", err);
+  }
+  setSaving(false);
+};
   // ── Filter recipes ────────────────────────────────────────────────────────
   const filtered = recipes.filter((r) => {
     const matchSearch = r.name.toLowerCase().includes(search.toLowerCase());
@@ -188,14 +232,16 @@ export default function RecipeLibrary() {
           <span style={styles.logoText}>NutriPlan</span>
         </a>
         <div style={styles.topbarRight}>
-          <button style={styles.importBtn} onClick={() => setImportOpen(true)}>
-            + Import from URL
-          </button>
-          <button style={styles.addBtn} onClick={() => setAddOpen(true)}>
-            Add Recipe
-          </button>
-          <ProfileDropdown />
-        </div>
+  <button style={styles.navLink} onClick={() => navigate("/dashboard")}>Dashboard</button>
+  <button style={styles.navLink} onClick={() => navigate("/calculator")}>Calculator</button>
+  <button style={styles.importBtn} onClick={() => setImportOpen(true)}>
+    + Import from URL
+  </button>
+  <button style={styles.addBtn} onClick={() => setAddOpen(true)}>
+    Add Recipe
+  </button>
+  <ProfileDropdown />
+</div>
         <button style={styles.menuToggle} onClick={() => setSidebarOpen(!sidebarOpen)}>☰</button>
       </header>
 
@@ -287,6 +333,36 @@ export default function RecipeLibrary() {
               <h3 style={styles.modalTitle}>➕ Add New Recipe</h3>
               <button style={styles.closeBtn} onClick={() => setAddOpen(false)}>✕</button>
             </div>
+
+            {/* Photo upload */}
+<div style={photoStyles.uploadArea}>
+  <input
+    type="file" accept="image/*" id="recipePhoto"
+    style={{ display: "none" }}
+    onChange={(e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      setPhotoFile(file);
+      setPhotoPreview(URL.createObjectURL(file));
+    }}
+  />
+  <label htmlFor="recipePhoto" style={photoStyles.uploadLabel}>
+    {photoPreview ? (
+      <img src={photoPreview} alt="preview" style={photoStyles.preview} />
+    ) : (
+      <div style={photoStyles.placeholder}>
+        <span style={{ fontSize: 32 }}>📷</span>
+        <span style={photoStyles.placeholderText}>Add a photo (optional)</span>
+        <span style={photoStyles.placeholderSub}>JPG, PNG up to 5MB</span>
+      </div>
+    )}
+  </label>
+  {photoPreview && (
+    <button style={photoStyles.removePhoto} onClick={() => { setPhotoFile(null); setPhotoPreview(null); }}>
+      ✕ Remove photo
+    </button>
+  )}
+</div>
 
             <div style={styles.formGrid}>
               <div style={styles.formGroup}>
@@ -414,7 +490,11 @@ function RecipeCard({ recipe, onToggleFavorite, onDelete, onClick }) {
       onClick={onClick}
     >
       <div style={styles.cardImg}>
-        <span style={styles.cardEmoji}>{recipe.emoji || "🍽️"}</span>
+  {recipe.photoURL ? (
+    <img src={recipe.photoURL} alt={recipe.name} style={styles.cardPhoto} />
+  ) : (
+    <span style={styles.cardEmoji}>{recipe.emoji || "🍽️"}</span>
+  )}
         <button style={styles.favBtn} onClick={(e) => { e.stopPropagation(); onToggleFavorite(); }}>
           {recipe.favorite ? "❤️" : "🤍"}
         </button>
@@ -453,6 +533,11 @@ function RecipeCard({ recipe, onToggleFavorite, onDelete, onClick }) {
 
 // ─── STYLES ───────────────────────────────────────────────────────────────────
 const styles = {
+  navLink: {
+  background: "none", border: "none",
+  color: "rgba(232,245,232,0.55)", fontSize: 14,
+  fontWeight: 500, cursor: "pointer", padding: "8px 12px",
+},
   root: {
     minHeight: "100vh", background: "#0a0f0a",
     color: "#e8f5e8", fontFamily: "'DM Sans', 'Segoe UI', sans-serif",
@@ -624,5 +709,29 @@ const styles = {
     color: "#0a0f0a", border: "none", borderRadius: 10,
     padding: "13px", fontSize: 15, fontWeight: 700,
     cursor: "pointer", fontFamily: "inherit",
+  },
+  cardPhoto: { width: "100%", height: "100%", objectFit: "cover" },
+};
+
+//outside styles
+  const photoStyles = {
+  uploadArea: { marginBottom: 20 },
+  uploadLabel: {
+    display: "block", cursor: "pointer",
+    borderRadius: 12, overflow: "hidden",
+    border: "2px dashed rgba(74,222,128,0.25)",
+    transition: "border-color 0.2s",
+  },
+  preview: { width: "100%", height: 180, objectFit: "cover", display: "block" },
+  placeholder: {
+    height: 140, display: "flex", flexDirection: "column",
+    alignItems: "center", justifyContent: "center", gap: 8,
+    background: "rgba(74,222,128,0.04)",
+  },
+  placeholderText: { fontSize: 14, color: "rgba(232,245,232,0.5)", fontWeight: 600 },
+  placeholderSub: { fontSize: 12, color: "rgba(232,245,232,0.25)" },
+  removePhoto: {
+    background: "none", border: "none", color: "#f87171",
+    fontSize: 13, cursor: "pointer", marginTop: 8, padding: 0,
   },
 };

@@ -12,6 +12,17 @@ export function AuthProvider({ children }) {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
       setLoading(false);
+
+      // Save login state to localStorage so session persists
+      if (currentUser) {
+        localStorage.setItem("nutriplan_user", JSON.stringify({
+          uid: currentUser.uid,
+          email: currentUser.email,
+          displayName: currentUser.displayName,
+        }));
+      } else {
+        localStorage.removeItem("nutriplan_user");
+      }
     });
     return unsubscribe;
   }, []);

@@ -1,5 +1,29 @@
 import { useState, useEffect, useRef } from "react";
 
+import { useAuth } from "../context/AuthContext";
+import { useNavigate } from "react-router-dom";
+
+function NavActions() {
+  const { user } = useAuth();
+  const navigate = useNavigate();
+
+  if (user) {
+    return (
+      <div style={styles.navActions}>
+        <a href="/recipes" style={styles.loginBtn}>Recipes</a>
+        <a href="/dashboard" style={styles.signupBtn}>Dashboard →</a>
+      </div>
+    );
+  }
+
+  return (
+    <div style={styles.navActions}>
+      <a href="/login" style={styles.loginBtn}>Login</a>
+      <a href="/signup" style={styles.signupBtn}>Sign Up</a>
+    </div>
+  );
+}
+
 const NAV_LINKS = ["Home", "Features", "About"];
 
 const FEATURES = [
@@ -133,10 +157,7 @@ export default function LandingPage() {
             ))}
           </div>
 
-          <div style={styles.navActions}>
-            <a href="/login" style={styles.loginBtn}>Login</a>
-            <a href="/signup" style={styles.signupBtn}>Sign Up</a>
-          </div>
+          <NavActions />
 
           {/* Mobile menu toggle */}
           <button style={styles.menuBtn} onClick={() => setMenuOpen(!menuOpen)}>

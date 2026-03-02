@@ -1,12 +1,12 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { collection, query, where, getDocs, doc, getDoc } from "firebase/firestore";
+import { collection, query, where, getDocs, doc, getDoc, addDoc, updateDoc, serverTimestamp } from "firebase/firestore";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { db } from "../firebase";
 import { useAuth } from "../context/AuthContext";
-import ProfileDropdown from "../components/common/ProfileDropdown"
+import ProfileDropdown from "../components/common/ProfileDropdown";
+import { uploadRecipePhoto } from "../hooks/usePhotoUpload";
 
-// ─── MOCK CALORIE DATA (will be real in future) ───────────────────────────────
 const CALORIE_DATA = [
   { day: "Mon", calories: 1850 },
   { day: "Tue", calories: 2100 },
@@ -15,13 +15,6 @@ const CALORIE_DATA = [
   { day: "Fri", calories: 1950 },
   { day: "Sat", calories: 2400 },
   { day: "Sun", calories: 1800 },
-];
-
-const QUICK_ACTIONS = [
-  { icon: "➕", label: "Add Recipe", color: "#4ade80", path: "/recipes/new" },
-  { icon: "🔗", label: "Import URL", color: "#34d399", path: "/recipes" },
-  { icon: "🧮", label: "Meal Calculator", color: "#6ee7b7", path: "/calculator" },
-  { icon: "📚", label: "View Library", color: "#a7f3d0", path: "/recipes" },
 ];
 
 const DAILY_GOAL = 2000;
@@ -33,6 +26,16 @@ export default function Dashboard() {
   const [userProfile, setUserProfile] = useState(null);
   const [recipes, setRecipes] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [addOpen, setAddOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [importUrl, setImportUrl] = useState("");
+  const [photoFile, setPhotoFile] = useState(null);
+  const [photoPreview, setPhotoPreview] = useState(null);
+  const [newRecipe, setNewRecipe] = useState({
+    name: "", emoji: "🍽️", time: "", difficulty: "Easy",
+    servings: 2, tag: "None", calories: "", protein: "", carbs: "", fat: "",
+  });
   const [prefs, setPrefs] = useState([
     { label: "Vegetarian", icon: "🥬", key: "vegetarian", active: false },
     { label: "Gluten-Free", icon: "🌾", key: "glutenFree", active: false },
@@ -47,53 +50,85 @@ export default function Dashboard() {
     return "Good evening";
   });
 
-  // ── Fetch user profile and recipes from Firestore ─────────────────────────
+  const QUICK_ACTIONS = [
+    { icon: "➕", label: "Add Recipe", color: "#4ade80", onClick: () => setAddOpen(true) },
+    { icon: "🔗", label: "Import URL", color: "#34d399", onClick: () => setImportOpen(true) },
+    { icon: "🧮", label: "Meal Calculator", color: "#6ee7b7", onClick: () => navigate("/calculator") },
+    { icon: "📚", label: "View Library", color: "#a7f3d0", onClick: () => navigate("/recipes") },
+  ];
+
   useEffect(() => {
     if (!user) return;
-
     const fetchData = async () => {
       setLoading(true);
       try {
-        // Fetch user profile
         const userRef = doc(db, "users", user.uid);
         const userSnap = await getDoc(userRef);
         if (userSnap.exists()) {
           const data = userSnap.data();
           setUserProfile(data);
-          // Update prefs from Firestore
           if (data.preferences) {
             setPrefs((prev) =>
               prev.map((p) => ({ ...p, active: data.preferences[p.key] || false }))
             );
           }
         }
-
-        // Fetch user's recipes
         const recipesRef = collection(db, "recipes");
         const q = query(recipesRef, where("userId", "==", user.uid));
         const querySnapshot = await getDocs(q);
-        const recipesData = querySnapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        }));
+        const recipesData = querySnapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
         setRecipes(recipesData);
       } catch (err) {
         console.error("Error fetching data:", err);
       }
       setLoading(false);
     };
-
     fetchData();
   }, [user]);
 
-  // ── Derived stats from real data ──────────────────────────────────────────
+  const handleAddRecipe = async () => {
+    if (!newRecipe.name.trim()) return;
+    setSaving(true);
+    try {
+      const docRef = await addDoc(collection(db, "recipes"), {
+        ...newRecipe,
+        userId: user.uid,
+        favorite: false,
+        photoURL: null,
+        nutrition: {
+          calories: Number(newRecipe.calories) || 0,
+          protein: newRecipe.protein || "0g",
+          carbs: newRecipe.carbs || "0g",
+          fat: newRecipe.fat || "0g",
+        },
+        createdAt: serverTimestamp(),
+      });
+      let photoURL = null;
+      if (photoFile) {
+        photoURL = await uploadRecipePhoto(photoFile, docRef.id, user.uid);
+        await updateDoc(doc(db, "recipes", docRef.id), { photoURL });
+      }
+      setRecipes((prev) => [...prev, {
+        id: docRef.id, ...newRecipe, favorite: false, photoURL,
+        nutrition: { calories: Number(newRecipe.calories) || 0 },
+      }]);
+      setAddOpen(false);
+      setPhotoFile(null);
+      setPhotoPreview(null);
+      setNewRecipe({ name: "", emoji: "🍽️", time: "", difficulty: "Easy", servings: 2, tag: "None", calories: "", protein: "", carbs: "", fat: "" });
+    } catch (err) {
+      console.error("Error adding recipe:", err);
+    }
+    setSaving(false);
+  };
+
   const totalRecipes = recipes.length;
   const favorites = recipes.filter((r) => r.favorite).length;
   const avgCalories = recipes.length > 0
     ? Math.round(recipes.reduce((sum, r) => sum + (r.nutrition?.calories || 0), 0) / recipes.length)
     : 0;
   const recentRecipes = recipes.slice(0, 4);
-  const todayCalories = 1500; // will come from meal log later
+  const todayCalories = 1500;
   const goalPct = Math.round((todayCalories / DAILY_GOAL) * 100);
 
   const STATS = [
@@ -103,13 +138,12 @@ export default function Dashboard() {
     { icon: "🎯", label: "Goal Progress", value: `${goalPct}%`, sub: "daily target", color: "#34d399" },
   ];
 
-
   const displayName = userProfile?.name || user?.displayName || user?.email?.split("@")[0] || "User";
 
   if (loading) {
     return (
       <div style={styles.loadingScreen}>
-        <div style={styles.loadingSpinner}>🌿</div>
+        <div style={{ fontSize: 48 }}>🌿</div>
         <p style={styles.loadingText}>Loading your dashboard...</p>
       </div>
     );
@@ -138,8 +172,8 @@ export default function Dashboard() {
           ))}
         </nav>
         <div style={styles.topbarRight}>
-  <ProfileDropdown />
-</div>
+          <ProfileDropdown />
+        </div>
       </header>
 
       <div style={styles.layout}>
@@ -166,7 +200,7 @@ export default function Dashboard() {
           <div style={styles.sidebarSection}>
             <p style={styles.sidebarHeading}>Quick Actions</p>
             {QUICK_ACTIONS.map((a) => (
-              <button key={a.label} style={styles.quickAction} onClick={() => navigate(a.path)}>
+              <button key={a.label} style={styles.quickAction} onClick={a.onClick}>
                 <span style={{ ...styles.quickIcon, background: `${a.color}18`, color: a.color }}>
                   {a.icon}
                 </span>
@@ -175,7 +209,6 @@ export default function Dashboard() {
             ))}
           </div>
 
-          {/* User info */}
           <div style={styles.userCard}>
             <div style={styles.userAvatar}>{displayName.charAt(0).toUpperCase()}</div>
             <div>
@@ -187,29 +220,22 @@ export default function Dashboard() {
 
         {/* MAIN */}
         <main style={styles.main}>
-          {/* GREETING */}
           <div style={styles.greetingRow}>
             <div>
               <h1 style={styles.greeting}>
                 {greeting}, <span style={styles.greetingName}>{displayName}!</span> 👋
               </h1>
-              <p style={styles.greetingSub}>
-                Here's your nutrition overview for today.
-              </p>
+              <p style={styles.greetingSub}>Here's your nutrition overview for today.</p>
             </div>
             <div style={styles.dateBadge}>
               {new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
             </div>
           </div>
 
-          {/* STAT CARDS */}
           <div style={styles.statsGrid}>
-            {STATS.map((s, i) => (
-              <StatCard key={s.label} stat={s} />
-            ))}
+            {STATS.map((s) => <StatCard key={s.label} stat={s} />)}
           </div>
 
-          {/* DAILY GOAL BAR */}
           <div style={styles.goalCard}>
             <div style={styles.goalLeft}>
               <div style={styles.goalTitle}>🎯 Today's Calorie Goal</div>
@@ -231,15 +257,11 @@ export default function Dashboard() {
               <div style={styles.goalPct}>{goalPct}%</div>
             </div>
             <div style={styles.goalRemaining}>
-              {DAILY_GOAL - todayCalories > 0
-                ? `${DAILY_GOAL - todayCalories} kcal remaining`
-                : "Goal reached! 🎉"}
+              {DAILY_GOAL - todayCalories > 0 ? `${DAILY_GOAL - todayCalories} kcal remaining` : "Goal reached! 🎉"}
             </div>
           </div>
 
-          {/* MIDDLE ROW */}
           <div style={styles.midRow}>
-            {/* CALORIE CHART */}
             <div style={styles.chartCard}>
               <div style={styles.cardHeader}>
                 <h2 style={styles.cardTitle}>📈 Weekly Calories</h2>
@@ -251,10 +273,7 @@ export default function Dashboard() {
                   <XAxis dataKey="day" tick={{ fill: "rgba(232,245,232,0.35)", fontSize: 12 }} axisLine={false} tickLine={false} />
                   <YAxis tick={{ fill: "rgba(232,245,232,0.35)", fontSize: 11 }} axisLine={false} tickLine={false} />
                   <Tooltip
-                    contentStyle={{
-                      background: "#111a11", border: "1px solid rgba(74,222,128,0.2)",
-                      borderRadius: 8, color: "#e8f5e8", fontSize: 13,
-                    }}
+                    contentStyle={{ background: "#111a11", border: "1px solid rgba(74,222,128,0.2)", borderRadius: 8, color: "#e8f5e8", fontSize: 13 }}
                     formatter={(v) => [`${v} kcal`, "Calories"]}
                   />
                   <Line type="monotone" dataKey="calories" stroke="#4ade80" strokeWidth={2.5}
@@ -264,7 +283,6 @@ export default function Dashboard() {
               </ResponsiveContainer>
             </div>
 
-            {/* RECIPE SUMMARY */}
             <div style={styles.mealsCard}>
               <div style={styles.cardHeader}>
                 <h2 style={styles.cardTitle}>📊 Library Summary</h2>
@@ -273,10 +291,8 @@ export default function Dashboard() {
               {totalRecipes === 0 ? (
                 <div style={styles.emptyState}>
                   <div style={{ fontSize: 36, marginBottom: 12 }}>🍽️</div>
-                  <p style={{ color: "rgba(232,245,232,0.4)", fontSize: 14, margin: 0 }}>
-                    No recipes yet
-                  </p>
-                  <button style={styles.addFirstBtn} onClick={() => navigate("/recipes")}>
+                  <p style={{ color: "rgba(232,245,232,0.4)", fontSize: 14, margin: 0 }}>No recipes yet</p>
+                  <button style={styles.addFirstBtn} onClick={() => setAddOpen(true)}>
                     Add your first recipe →
                   </button>
                 </div>
@@ -297,31 +313,26 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* RECENT RECIPES */}
           <div style={styles.recentSection}>
             <div style={styles.sectionHeader}>
               <h2 style={styles.cardTitle}>🕐 Recent Recipes</h2>
-              <button style={styles.viewAllBtn} onClick={() => navigate("/recipes")}>
-                View All →
-              </button>
+              <button style={styles.viewAllBtn} onClick={() => navigate("/recipes")}>View All →</button>
             </div>
-
             {recentRecipes.length === 0 ? (
               <div style={styles.emptyRecipes}>
                 <div style={{ fontSize: 48, marginBottom: 16 }}>👨‍🍳</div>
                 <p style={{ color: "rgba(232,245,232,0.4)", fontSize: 15, margin: "0 0 16px" }}>
                   Your recipe library is empty
                 </p>
-                <button style={styles.ctaBtn} onClick={() => navigate("/recipes")}>
-                  Browse & Add Recipes →
+                <button style={styles.ctaBtn} onClick={() => setAddOpen(true)}>
+                  Add Your First Recipe →
                 </button>
               </div>
             ) : (
               <div style={styles.recentGrid}>
                 {recentRecipes.map((r) => (
                   <div
-                    key={r.id}
-                    style={styles.recentCard}
+                    key={r.id} style={styles.recentCard}
                     onClick={() => navigate(`/recipes/${r.id}`)}
                     onMouseEnter={(e) => {
                       e.currentTarget.style.transform = "translateY(-4px)";
@@ -332,13 +343,19 @@ export default function Dashboard() {
                       e.currentTarget.style.borderColor = "rgba(255,255,255,0.06)";
                     }}
                   >
-                    <div style={styles.recentEmoji}>{r.emoji || "🍽️"}</div>
+                    {r.photoURL ? (
+                      <img src={r.photoURL} alt={r.name} style={styles.recentPhoto} />
+                    ) : (
+                      <div style={styles.recentEmoji}>{r.emoji || "🍽️"}</div>
+                    )}
                     <div style={styles.recentInfo}>
                       <div style={styles.recentName}>{r.name}</div>
                       <div style={styles.recentMeta}>
-                        <span>⏱ {r.time || "—"}</span>
-                        <span>🔥 {r.nutrition?.calories || "—"} kcal</span>
-                        {r.tag && <span style={styles.recentTag}>{r.tag}</span>}
+                        {r.time && <span>⏱ {r.time}</span>}
+                        <span>🔥 {r.nutrition?.calories || r.calories || "—"} kcal</span>
+                        {r.tag && r.tag !== "None" && (
+                          <span style={styles.recentTag}>{r.tag}</span>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -348,11 +365,117 @@ export default function Dashboard() {
           </div>
         </main>
       </div>
+
+      {/* ADD RECIPE MODAL */}
+      {addOpen && (
+        <div style={styles.modalOverlay} onClick={() => setAddOpen(false)}>
+          <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+            <div style={styles.modalHeader}>
+              <h3 style={styles.modalTitle}>➕ Add New Recipe</h3>
+              <button style={styles.closeBtn} onClick={() => setAddOpen(false)}>✕</button>
+            </div>
+
+            {/* Photo upload */}
+            <div style={photoStyles.uploadArea}>
+              <input
+                type="file" accept="image/*" id="recipePhoto"
+                style={{ display: "none" }}
+                onChange={(e) => {
+                  const file = e.target.files[0];
+                  if (!file) return;
+                  setPhotoFile(file);
+                  setPhotoPreview(URL.createObjectURL(file));
+                }}
+              />
+              <label htmlFor="recipePhoto" style={photoStyles.uploadLabel}>
+                {photoPreview ? (
+                  <img src={photoPreview} alt="preview" style={photoStyles.preview} />
+                ) : (
+                  <div style={photoStyles.placeholder}>
+                    <span style={{ fontSize: 32 }}>📷</span>
+                    <span style={photoStyles.placeholderText}>Add a photo (optional)</span>
+                    <span style={photoStyles.placeholderSub}>JPG, PNG up to 5MB</span>
+                  </div>
+                )}
+              </label>
+              {photoPreview && (
+                <button style={photoStyles.removePhoto} onClick={() => { setPhotoFile(null); setPhotoPreview(null); }}>
+                  ✕ Remove photo
+                </button>
+              )}
+            </div>
+
+            <div style={styles.formGrid}>
+              {[
+                { label: "Recipe Name *", key: "name", placeholder: "e.g. Grilled Chicken" },
+                { label: "Emoji Icon", key: "emoji", placeholder: "🍽️" },
+                { label: "Cook Time", key: "time", placeholder: "e.g. 20 min" },
+                { label: "Calories (kcal)", key: "calories", placeholder: "e.g. 420", type: "number" },
+                { label: "Protein", key: "protein", placeholder: "e.g. 35g" },
+                { label: "Carbs", key: "carbs", placeholder: "e.g. 10g" },
+                { label: "Fat", key: "fat", placeholder: "e.g. 28g" },
+              ].map(({ label, key, placeholder, type }) => (
+                <div key={key} style={styles.formGroup}>
+                  <label style={styles.formLabel}>{label}</label>
+                  <input
+                    style={styles.formInput} type={type || "text"} placeholder={placeholder}
+                    value={newRecipe[key]}
+                    onChange={(e) => setNewRecipe({ ...newRecipe, [key]: e.target.value })}
+                  />
+                </div>
+              ))}
+              <div style={styles.formGroup}>
+                <label style={styles.formLabel}>Difficulty</label>
+                <select style={styles.formInput} value={newRecipe.difficulty}
+                  onChange={(e) => setNewRecipe({ ...newRecipe, difficulty: e.target.value })}>
+                  {["Easy", "Medium", "Hard"].map((d) => <option key={d}>{d}</option>)}
+                </select>
+              </div>
+              <div style={styles.formGroup}>
+                <label style={styles.formLabel}>Dietary Tag</label>
+                <select style={styles.formInput} value={newRecipe.tag}
+                  onChange={(e) => setNewRecipe({ ...newRecipe, tag: e.target.value })}>
+                  {["None", "Vegan", "Gluten-Free", "Low-Carb"].map((t) => <option key={t}>{t}</option>)}
+                </select>
+              </div>
+            </div>
+            <button style={{ ...styles.submitBtn, opacity: saving ? 0.7 : 1 }}
+              onClick={handleAddRecipe} disabled={saving}>
+              {saving ? "Saving..." : "Save Recipe →"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* IMPORT URL MODAL */}
+      {importOpen && (
+        <div style={styles.modalOverlay} onClick={() => setImportOpen(false)}>
+          <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+            <div style={styles.modalHeader}>
+              <div style={{ fontSize: 32 }}>🤖</div>
+              <div>
+                <h3 style={styles.modalTitle}>Import from URL</h3>
+                <p style={styles.modalSub}>AI import coming in Phase 4</p>
+              </div>
+              <button style={styles.closeBtn} onClick={() => setImportOpen(false)}>✕</button>
+            </div>
+            <input style={styles.modalInput} placeholder="https://www.allrecipes.com/recipe/..."
+              value={importUrl} onChange={(e) => setImportUrl(e.target.value)} />
+            <div style={styles.modalSites}>
+              {["AllRecipes", "Food Network", "NYT Cooking", "Tasty"].map((s) => (
+                <span key={s} style={styles.sitePill}>{s}</span>
+              ))}
+            </div>
+            <button style={{ ...styles.submitBtn, opacity: 0.5, cursor: "not-allowed" }}>
+              Coming in Phase 4 (AI Integration)
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-// ─── STAT CARD ────────────────────────────────────────────────────────────────
 function StatCard({ stat }) {
   const [hovered, setHovered] = useState(false);
   return (
@@ -373,7 +496,6 @@ function StatCard({ stat }) {
   );
 }
 
-// ─── STYLES ──────────────────────────────────────────────────────────────────
 const styles = {
   root: {
     minHeight: "100vh", background: "#0a0f0a",
@@ -385,7 +507,6 @@ const styles = {
     display: "flex", flexDirection: "column",
     alignItems: "center", justifyContent: "center", gap: 16,
   },
-  loadingSpinner: { fontSize: 48, animation: "spin 2s linear infinite" },
   loadingText: { color: "rgba(232,245,232,0.4)", fontSize: 16 },
   blob1: {
     position: "fixed", top: "-150px", left: "-150px", width: 400, height: 400,
@@ -412,17 +533,6 @@ const styles = {
     fontSize: 14, fontWeight: 500, cursor: "pointer", padding: "8px 14px", borderRadius: 8,
   },
   topbarRight: { display: "flex", alignItems: "center", gap: 12, flexShrink: 0 },
-  logoutBtn: {
-    background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)",
-    color: "#f87171", padding: "7px 14px", borderRadius: 8,
-    fontSize: 13, fontWeight: 600, cursor: "pointer",
-  },
-  avatar: {
-    width: 36, height: 36, borderRadius: "50%",
-    background: "linear-gradient(135deg, #4ade80, #22c55e)",
-    color: "#0a0f0a", display: "flex", alignItems: "center",
-    justifyContent: "center", fontWeight: 800, fontSize: 15,
-  },
   layout: {
     display: "flex", maxWidth: 1300, margin: "0 auto",
     padding: "0 16px", position: "relative", zIndex: 1,
@@ -557,6 +667,7 @@ const styles = {
     borderRadius: 12, padding: "16px", cursor: "pointer", transition: "all 0.25s ease",
     display: "flex", alignItems: "center", gap: 14,
   },
+  recentPhoto: { width: 48, height: 48, borderRadius: 8, objectFit: "cover", flexShrink: 0 },
   recentEmoji: { fontSize: 32, flexShrink: 0 },
   recentInfo: { flex: 1, minWidth: 0 },
   recentName: {
@@ -567,5 +678,69 @@ const styles = {
   recentTag: {
     background: "rgba(74,222,128,0.1)", color: "#4ade80",
     padding: "1px 8px", borderRadius: 100, fontSize: 11, fontWeight: 600,
+  },
+  modalOverlay: {
+    position: "fixed", inset: 0, zIndex: 200,
+    background: "rgba(0,0,0,0.7)", backdropFilter: "blur(8px)",
+    display: "flex", alignItems: "center", justifyContent: "center", padding: 24,
+  },
+  modal: {
+    background: "#111a11", border: "1px solid rgba(74,222,128,0.2)",
+    borderRadius: 16, padding: "28px", width: "100%", maxWidth: 500,
+    maxHeight: "90vh", overflowY: "auto",
+  },
+  modalHeader: { display: "flex", alignItems: "center", gap: 14, marginBottom: 20 },
+  modalTitle: { fontSize: 18, fontWeight: 700, color: "#e8f5e8", margin: 0 },
+  modalSub: { fontSize: 13, color: "rgba(232,245,232,0.4)", margin: "4px 0 0" },
+  closeBtn: {
+    marginLeft: "auto", background: "none", border: "none",
+    color: "rgba(232,245,232,0.4)", fontSize: 18, cursor: "pointer",
+  },
+  formGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 20 },
+  formGroup: { display: "flex", flexDirection: "column", gap: 6 },
+  formLabel: { fontSize: 12, fontWeight: 600, color: "rgba(232,245,232,0.5)" },
+  formInput: {
+    background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)",
+    borderRadius: 8, padding: "9px 12px", color: "#e8f5e8",
+    fontSize: 14, outline: "none", fontFamily: "inherit",
+  },
+  submitBtn: {
+    width: "100%", background: "linear-gradient(135deg, #4ade80, #22c55e)",
+    color: "#0a0f0a", border: "none", borderRadius: 10,
+    padding: "13px", fontSize: 15, fontWeight: 700,
+    cursor: "pointer", fontFamily: "inherit",
+  },
+  modalInput: {
+    width: "100%", background: "rgba(255,255,255,0.05)",
+    border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10,
+    padding: "12px 14px", color: "#e8f5e8", fontSize: 14,
+    outline: "none", fontFamily: "inherit", boxSizing: "border-box", marginBottom: 14,
+  },
+  modalSites: { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20 },
+  sitePill: {
+    background: "rgba(74,222,128,0.08)", border: "1px solid rgba(74,222,128,0.15)",
+    color: "rgba(232,245,232,0.5)", padding: "4px 12px", borderRadius: 100, fontSize: 12,
+  },
+};
+
+const photoStyles = {
+  uploadArea: { marginBottom: 20 },
+  uploadLabel: {
+    display: "block", cursor: "pointer",
+    borderRadius: 12, overflow: "hidden",
+    border: "2px dashed rgba(74,222,128,0.25)",
+    transition: "border-color 0.2s",
+  },
+  preview: { width: "100%", height: 180, objectFit: "cover", display: "block" },
+  placeholder: {
+    height: 140, display: "flex", flexDirection: "column",
+    alignItems: "center", justifyContent: "center", gap: 8,
+    background: "rgba(74,222,128,0.04)",
+  },
+  placeholderText: { fontSize: 14, color: "rgba(232,245,232,0.5)", fontWeight: 600 },
+  placeholderSub: { fontSize: 12, color: "rgba(232,245,232,0.25)" },
+  removePhoto: {
+    background: "none", border: "none", color: "#f87171",
+    fontSize: 13, cursor: "pointer", marginTop: 8, padding: 0,
   },
 };
